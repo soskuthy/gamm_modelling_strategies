@@ -1,0 +1,426 @@
+---
+title: "Models for set 1, pitch results (GAMM modelling strategies)"
+author: "Márton Sóskuthy"
+date: "25/05/2018"
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This document is a supplement to "Evaluating generalised additive mixed modelling strategies for dynamic speech analysis," relating specifically to the contents of Table 2 in Section 3.1. It presents code that illustrates (i) how the simulated data were generated and (ii) the models whose performance is summarised Table 1.
+
+## Preliminaries
+
+The code below loads the relevant libraries.
+
+```{r, message=F}
+library(ggplot2)
+library(mgcv)
+library(itsadug)
+```
+
+## Data generation
+
+The code in this section can be used to create data for either type I or type II simulations. Set the value of *type* to 1 for type I simulations and to 2 for type II simulations. To replicate the results in table 3, which summarise the same types of trajectories, but with a small amount of added noise, set the value of *noise* to TRUE.
+
+```{r}
+type = 1
+noise = FALSE
+```
+
+The data for this set of simulations consist of simulated pitch trajectories loosely modelled after triconstituent compounds in English. 50 trajectories are generated. For type I simulations, these are randomly assigned to two groups (A and B). For type II simulations, all group B trajectories are slightly modified (cf. Section 2.1 in the paper and also the Appendix).
+
+The following code sets the parameters that determine the main characteristics of the data set.
+
+```{r}
+# setting time dimension (these are the points along which the trajectories are generated)
+xs_dense = seq(0,1,0.025)
+
+# indices for extracting every second measurement; this is used for downsampling
+xs_thin_ind = c(rep(c(T,F), (length(xs_dense)-1)/2), T)
+
+# expected values & sd for starting and end points
+start_mean = 170
+start_sd = 10
+slope_mean = -30
+slope_sd = 8
+
+# boundaries between N1, N2 and N3
+
+boundary.1_min = (1/3) - 0.1
+boundary.1_max = (1/3) + 0.1
+
+boundary.2_min = (2/3) - 0.1
+boundary.2_max = (2/3) + 0.1
+
+# pitch accent 1 - vertical target
+H.star.1_vertical_mean = 15 # roughly the equivalent of ~ 1.5-2 semitones
+H.star.1_vertical_sd = 6
+
+# pitch accent 1 - horizontal target
+H.star.1_horizontal_min = 0 # as a proportion of the duration of W1
+H.star.1_horizontal_max = 0.25
+
+# pitch accent 1 - width
+H.star.1_bw = 0.12 # as a proportion of *overall* duration
+
+# pitch accent 2 - vertical target
+H.star.2_vertical_mean = 4.5
+H.star.2_vertical_sd = 6
+
+# pitch accent 2 - horizontal target
+H.star.2_horizontal_min = 0 # as a proportion of the duration of W2
+H.star.2_horizontal_max = 0.25
+
+# pitch accent 2 - width
+H.star.2_bw = 0.12 # as a proportion of *overall* duration
+  
+# boundary tone - vertical target
+H.minus_vertical_mean = 8 # about half of H.star
+H.minus_vertical_sd = 3
+
+# boundary tone - width
+H.minus_bw = 0.08
+
+# final boundary tone - vertical target & width
+L.percent_vertical = -20
+L.percent_bw = 0.12
+
+# noise
+noise_sd = 1
+
+# number of trajectories to generate
+n_trajectories <- 50
+
+```
+
+The code below assembles the dense version of the data set.
+
+```{r}
+# creating matrix that will store the trajectories
+ys_m <- matrix(0, nrow=length(xs_dense), ncol=n_trajectories)
+
+# assembling individual trajectories in pairs (one for group A and one for group B)
+for (i in 1:n_trajectories) {
+  # sampling start values, slopes, boundary positions and pitch accents / boundary tones 
+  # for trajectories A and B
+  start <- rnorm(1, start_mean, start_sd)
+  slope <- rnorm(1, slope_mean, slope_sd)
+  boundary.1 <- runif(1, boundary.1_min, boundary.1_max)
+  boundary.2 <- runif(1, boundary.2_min, boundary.2_max)
+  H.star.1_horizontal <- runif(1, H.star.1_horizontal_min, H.star.1_horizontal_max)
+  H.star.1_vertical <- rnorm(1, H.star.1_vertical_mean, H.star.1_vertical_sd)
+  H.star.2_horizontal <- runif(1, H.star.2_horizontal_min, H.star.2_horizontal_max)
+  H.star.2_vertical <- rnorm(1, H.star.2_vertical_mean, H.star.2_vertical_sd)
+  H.minus_vertical <- rnorm(1, H.minus_vertical_mean, H.minus_vertical_sd)
+  
+  # assembling the trajectories
+  ys_m[,i] <- start + xs_dense*slope +  # declination
+    exp(-((xs_dense - (boundary.1*H.star.1_horizontal))**2)/(2*H.star.1_bw**2)) * H.star.1_vertical + # 1st pitch accent
+    exp(-((xs_dense - boundary.2)**2)/(2*H.minus_bw**2)) * H.minus_vertical + # boundary tone
+    exp(-((xs_dense - 1)**2)/(2*L.percent_bw**2)) * L.percent_vertical # final boundary tone
+  
+  # adding additional pitch accent for group B if this is a type II simulation
+  if (i > (n_trajectories/2) & type==2) {
+    ys_m[,i] <- ys_m[,i] + 
+      exp(-((xs_dense - (boundary.1+(boundary.2-boundary.1)*H.star.2_horizontal))**2)/(2*H.star.2_bw**2)) * H.star.2_vertical # 2nd pitch accent
+  }
+  
+  # adding noise
+  if (noise) {
+    ys_m[,i] <- ys_m[,i] + rnorm(length(xs_dense), 0, noise_sd)
+  }
+}
+
+# assembling data set
+dat_dense <- data.frame(traj=paste("traj_", rep(1:n_trajectories, each=length(xs_dense)), sep=""), # traj ids
+                  group=rep(c("A","B"), each=length(xs_dense)*(n_trajectories / 2)),               # group ids
+                  measurement.no=xs_dense,                          # measurement number (i.e. time dimension)
+                  pitch=c(ys_m),                                                             # pitch  values
+                  stringsAsFactors = F
+)
+
+# setting up different types of grouping factors
+dat_dense$group.factor <- as.factor(dat_dense$group)
+dat_dense$group.ordered <- as.ordered(dat_dense$group) 
+contrasts(dat_dense$group.ordered) <- "contr.treatment"
+dat_dense$group.bin <- as.numeric(dat_dense$group.factor) - 1
+
+# trajectory ids must be factors  
+dat_dense$traj <- as.factor(dat_dense$traj)
+
+# add dat$start for AR.start (for autoregressive error models)
+dat_dense$start <- dat_dense$measurement.no == 0
+```
+
+Downsampling to thin version of the data set.
+
+```{r}
+dat_thin <- dat_dense[rep(xs_thin_ind, n_trajectories),]
+```
+
+Here is what the data set looks like.
+
+```{r}
+ggplot(dat_dense, aes(x=measurement.no, y=pitch, group=traj, col=group)) +
+  geom_line() +
+  facet_grid(~group)
+```
+
+## Models
+
+All the models (and sets of models) from Table 1 are shown below in the same order as in the table.
+
+### 1. No components
+
+```{r}
+# dense
+nocomp_dense <- bam(pitch ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 15) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 15),
+                    data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+summary(nocomp_dense)
+
+# thin
+nocomp_thin <- bam(pitch ~ group.ordered + 
+                     s(measurement.no, bs = "tp", k = 15) + 
+                     s(measurement.no, by = group.ordered, bs = "tp", k = 15), 
+                   data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+summary(nocomp_thin)
+```
+
+### 2. Rand intcpt (= Random Intercept)
+
+```{r}
+# dense
+rand_intcpt_dense <- bam(pitch ~ group.ordered + 
+                           s(measurement.no, bs = "tp", k = 15) + 
+                           s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+                           s(traj, bs = "re"), 
+                         data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_intcpt_dense)
+
+# thin
+rand_intcpt_thin <- bam(pitch ~ group.ordered + 
+                           s(measurement.no, bs = "tp", k = 15) + 
+                           s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+                           s(traj, bs = "re"), 
+                         data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_intcpt_thin)
+```
+
+### 3. Rand intcpt + slope (= random intercept + slope)
+
+```{r}
+# dense
+rand_intcpt_slope_dense <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(traj, bs = "re") + 
+        s(traj, measurement.no, bs = "re"), 
+      data = dat_dense, method = "fREML", discrete = T, nthreads = 1) 
+summary(rand_intcpt_slope_dense)
+
+# thin
+rand_intcpt_slope_thin <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(traj, bs = "re") + 
+        s(traj, measurement.no, bs = "re"), 
+      data = dat_thin, method = "fREML", discrete = T, nthreads = 1) 
+summary(rand_intcpt_slope_thin)
+```
+
+### 4. Rand smooth, 5 bs
+
+```{r}
+# dense
+rand_smooth_3_dense <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = 5), 
+      data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_3_dense)
+
+# thin
+rand_smooth_3_thin <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = 5), 
+      data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_3_thin)
+```
+
+### 5. Rand smooth, 8 bs
+
+```{r}
+# dense
+rand_smooth_5_dense <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = 8), 
+      data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_5_dense)
+
+# thin
+rand_smooth_5_thin <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = 8), 
+      data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_5_thin)
+```
+
+### 6. Rand smooth, 12 bs
+
+```{r}
+# dense
+rand_smooth_10_dense <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = 12), 
+      data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_10_dense)
+
+# thin
+rand_smooth_10_thin <- 
+  bam(pitch ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 15) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+        s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = 12), 
+      data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_10_thin)
+```
+
+### 7. Rand smooth, gam.check
+
+The model fitted in this section uses random smooths where the number of basis functions (k) is determined using the gam.check() function: after fitting an initial model with a relatively low value of k, gam.check() is used to see whether more wiggliness is necessary (essentially, whether the smooths use up all the degrees of freedom afforded to them). If gam.check() suggests that more wiggliness is necessary, this procedure is repeated again using a model with a higher value of k.
+
+Below is a convenience function for extracting the relevant p-value from the output of gam.check.
+
+```{r}
+gam.check.p.value <- function (mod, which.line) { # which.line is a regexp
+  str.out <- capture.output(gam.check(mod))
+  relevant.line <- str.out[grep(which.line, str.out)]
+  p.value <- as.numeric(regmatches(relevant.line, regexpr("[0-9.]*$", relevant.line)))
+  return(p.value)
+}
+```
+
+Fitting the models. Dense first.
+
+```{r}
+# what k's should be tried?
+k_min = 4
+k_max = 12
+k_step = 4
+```
+
+```{r}
+# dense
+for (k in seq(k_min,k_max,k_step)) {
+  cat("fitting model with  k =", k, "\n")
+  
+  # fitting model
+  
+  rand_smooth_gam.check_dense <- 
+    bam(pitch ~ group.ordered + 
+          s(measurement.no, bs = "tp", k = 15) + 
+          s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+          s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = k), 
+        data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+  
+  # check whether more complexity is needed using gam.check
+  
+  if (gam.check.p.value(rand_smooth_gam.check_dense, "traj") >= 0.05 | k == k_max) {
+    print(summary(rand_smooth_gam.check_dense))
+    break
+  }
+}
+``` 
+
+And now the thin data set.
+
+```{r}
+# thin
+for (k in seq(k_min,k_max,k_step)) {
+  cat("fitting model with  k =", k, "\n")
+  
+  # fitting model
+  
+  rand_smooth_gam.check_thin <- 
+    bam(pitch ~ group.ordered + 
+          s(measurement.no, bs = "tp", k = 15) + 
+          s(measurement.no, by = group.ordered, bs = "tp", k = 15) + 
+          s(measurement.no, traj, bs = "fs", m = 1, xt = "tp", k = k), 
+        data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+  
+  # check whether more complexity is needed using gam.check
+  
+  if (gam.check.p.value(rand_smooth_gam.check_thin, "traj") >= 0.05 | k == k_max) {
+    print(summary(rand_smooth_gam.check_thin))
+    break
+  }
+}
+```
+
+### 8. AR1
+
+First fitting models without AR component in order to estimate rho. This is equivalent to the nocomp model above.
+
+```{r}
+# dense
+nocomp_dense <- bam(pitch ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 15) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 15), 
+                    data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+# thin
+nocomp_thin <- bam(pitch ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 15) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 15), 
+                    data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+```
+
+Extracting rho.
+
+```{r}
+rho_dense <- start_value_rho(nocomp_dense)
+cat("rho =", rho_dense, "for the dense data set\n")
+rho_thin <- start_value_rho(nocomp_thin)
+cat("rho =", rho_thin, "for the thin data set\n")
+```
+
+Fitting models with AR1
+
+```{r}
+# dense
+AR1_dense <- bam(pitch ~ group.ordered + 
+                   s(measurement.no, bs = "tp", k = 15) + 
+                   s(measurement.no, by = group.ordered, bs = "tp", k = 15), 
+                 data = dat_dense, 
+                 AR.start = dat_dense$start, rho = rho_dense, 
+                 method = "fREML", discrete = T, nthreads = 1)
+summary(AR1_dense)
+
+# thin
+AR1_thin <- bam(pitch ~ group.ordered + 
+                   s(measurement.no, bs = "tp", k = 15) + 
+                   s(measurement.no, by = group.ordered, bs = "tp", k = 15), 
+                 data = dat_thin, 
+                 AR.start = dat_thin$start, rho = rho_thin, 
+                 method = "fREML", discrete = T, nthreads = 1)
+summary(AR1_thin)
+```
