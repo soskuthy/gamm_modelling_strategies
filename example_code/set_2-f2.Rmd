@@ -1,0 +1,397 @@
+---
+title: "Models for set 2, F2 results (GAMM modelling strategies)"
+author: "Márton Sóskuthy"
+date: "25/05/2018"
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This document is a supplement to "Evaluating generalised additive mixed modelling strategies for dynamic speech analysis," relating specifically to the contents of Table 3 in Section 3.2. It presents code that illustrates (i) how the simulated data were generated and (ii) the models whose performance is summarised Table 3.
+
+## Preliminaries
+
+The code below loads the relevant libraries.
+
+```{r, message=F}
+library(ggplot2)
+library(mgcv)
+library(itsadug)
+```
+
+## Data generation
+
+The code in this section can be used to create data for either type I or type II simulations. Set the value of *type* to 1 for type I simulations and to 2 for type II simulations.
+
+```{r}
+type = 2
+```
+
+The data for this set of simulations consist of simulated f2 trajectories loosely modelled after the diphthong /eI/. In this simulation, there are 50 different word types, each of which is represented by 10 trajectories. For type I simulations, each word is randomly assigned to one of two groups (A and B), but there is no underlying difference between the groups. For type II simulations, all group B words have slightly different targets (cf. Section 2.1 in the paper and also the Appendix).
+
+The following code sets the parameters that determine the main characteristics of the data set.
+
+```{r}
+# setting time dimension (these are the points along which the trajectories are generated)
+xs_dense = seq(0,1,0.05)
+
+# indices for extracting every second measurement; this is used for downsampling
+xs_thin_ind = c(rep(c(T,F), (length(xs_dense)-1)/2), T) 
+
+# population parameters: individual words come from this distribution
+f2_start_mean = 1500
+f2_end_1_mean = 2000
+f2_end_2_mean = 1960
+
+f2_start_sd.word = 40 # population level sd
+f2_end_1_sd.word = 40 # population level sd
+f2_end_2_sd.word = 40 # population level sd
+
+# expected value & sd for transition point
+x0_mean = 0.35
+x0_sd.word = 0.020 # population level sd
+# expected value & sd for steepness (higher -> more steep)
+k_mean = 25
+k_sd.word = 4 # population level sd
+
+# how much variation within words?
+f2_start_sd.traj = 30 # trajectory level sd
+f2_end_1_sd.traj = 30 # trajectory level sd
+f2_end_2_sd.traj = 30 # trajectory level sd
+x0_sd.traj = 0.015 # trajectory level sd
+k_sd.traj = 3 # trajectory level sd
+
+# amount of random noise
+noise_sd <- 5
+
+# number of words & trajectories / word
+n_words <- 50
+n_trajectories_per_word <- 10
+```
+
+The code below assembles the dense version of the data set.
+
+```{r}
+# creating matrix that will store the trajectories
+ys_m <- matrix(0, nrow=length(xs_dense), ncol=n_words*n_trajectories_per_word)
+
+# assembling words & individual trajectories
+for (i in 1:n_words) {
+  # sampling word-level targets
+  f2_start.word <- rnorm(1, f2_start_mean, f2_start_sd.word)
+  f2_end_1.word <- rnorm(1, f2_end_1_mean, f2_end_1_sd.word)
+  if (type==1) {
+    f2_end_2.word <- rnorm(1, f2_end_1_mean, f2_end_1_sd.word)
+  } else {
+    f2_end_2.word <- rnorm(1, f2_end_2_mean, f2_end_2_sd.word)
+  }
+  x0.word <- rnorm(1, x0_mean, x0_sd.word)
+  k.word <- rnorm(1, k_mean, k_sd.word)
+  
+  # sampling trajectory-level targets,
+  for (j in 1:n_trajectories_per_word) {
+    f2_start <- rnorm(1, f2_start.word, f2_start_sd.traj)
+    f2_end_1 <- rnorm(1, f2_end_1.word, f2_end_1_sd.traj)
+    f2_end_2 <- rnorm(1, f2_end_2.word, f2_end_2_sd.traj)
+    x0 <- rnorm(1, x0.word, x0_sd.traj)
+    k <- rnorm(1, k.word, k_sd.traj)
+    
+    # assembling trajectories
+    if (i <= (n_words / 2)) {
+      ys_m[,(i-1)*n_trajectories_per_word + j] <- ((f2_end_1 - f2_start) / (1 + exp(-k*(xs_dense-x0)))) + f2_start + rnorm(length(xs_dense), 0, noise_sd)
+    } else {
+      ys_m[,(i-1)*n_trajectories_per_word + j] <- ((f2_end_2 - f2_start) / (1 + exp(-k*(xs_dense-x0)))) + f2_start + rnorm(length(xs_dense), 0, noise_sd)
+    }
+  }
+}
+
+# assembling data set (randomly assigned to categories)
+dat_dense <- data.frame(traj=paste("traj_", rep(1:(n_words*n_trajectories_per_word), each=length(xs_dense)), sep=""),
+                  word=paste("word_", rep(1:n_words, each=length(xs_dense)*n_trajectories_per_word), sep=""),
+                  group=rep(c("A","B"), each=length(xs_dense)*(n_words*n_trajectories_per_word / 2)),
+                  measurement.no=xs_dense, 
+                  f2=c(ys_m),
+                  stringsAsFactors = F
+                 )
+
+# setting up different types of grouping factors
+dat_dense$group.factor <- as.factor(dat_dense$group)
+dat_dense$group.ordered <- as.ordered(dat_dense$group)
+contrasts(dat_dense$group.ordered) <- "contr.treatment"
+dat_dense$group.bin <- as.numeric(dat_dense$group.factor) - 1
+
+# traj/word ids must be factors  
+dat_dense$traj <- as.factor(dat_dense$traj)
+dat_dense$word <- as.factor(dat_dense$word)
+
+# add dat$start for AR.start (for autoregressive error models)
+
+dat_dense$start <- dat_dense$measurement.no == 0
+```
+
+Downsampling to thin version of the data set.
+
+```{r}
+dat_thin <- dat_dense[rep(xs_thin_ind, n_words*n_trajectories_per_word),]
+```
+
+Here is what the data set looks like.
+
+```{r}
+ggplot(dat_dense, aes(x=measurement.no, y=f2, group=traj, col=group)) +
+  geom_line() +
+  facet_wrap(~word)
+```
+
+## Models
+
+All the models (and sets of models) from Table 3 are shown below in the same order as in the table. Note that all models contain AR1 components to deal with dependencies within trajectories. For simplicity, the rho value used for these AR1 components is taken from a single model fitted without any random structures. This model is estimated below.
+
+```{r}
+# dense
+rho_mod_dense <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10), 
+                    data = dat_dense, method = "fREML", discrete = T, nthreads = 1)
+
+# thin
+rho_mod_thin <- bam(f2 ~ group.ordered + 
+                     s(measurement.no, bs = "tp", k = 10) + 
+                     s(measurement.no, by = group.ordered, bs = "tp", k = 10), 
+                   data = dat_thin, method = "fREML", discrete = T, nthreads = 1)
+
+rho_dense <- start_value_rho(rho_mod_dense)
+rho_thin <- start_value_rho(rho_mod_thin)
+```
+
+### 1. No components
+
+```{r}
+# dense
+nocomp_dense <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10), 
+                    data = dat_dense, 
+                    AR.start = dat_dense$start, rho = rho_dense, 
+                    method = "fREML", discrete = T, nthreads = 1)
+summary(nocomp_dense)
+
+# thin
+nocomp_thin <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10), 
+                    data = dat_thin, 
+                    AR.start = dat_thin$start, rho = rho_thin, 
+                    method = "fREML", discrete = T, nthreads = 1)
+summary(nocomp_thin)
+```
+
+### 2. Rand intcpt (= Random Intercept)
+
+```{r}
+# dense
+rand_intcpt_dense <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10) +
+                      s(word, bs = "re"), 
+                    data = dat_dense, 
+                    AR.start = dat_dense$start, rho = rho_dense, 
+                    method = "fREML", discrete = T, nthreads = 1)
+summary(rand_intcpt_dense)
+
+# thin
+rand_intcpt_thin <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10) +
+                      s(word, bs = "re"), 
+                    data = dat_thin, 
+                    AR.start = dat_thin$start, rho = rho_thin, 
+                    method = "fREML", discrete = T, nthreads = 1)
+summary(rand_intcpt_thin)
+```
+
+### 3. Rand intcpt + slope (= random intercept + slope)
+
+```{r}
+# dense
+rand_intcpt_slope_dense <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10) +
+                      s(word, bs = "re") +
+                      s(word, measurement.no, bs = "re"), 
+                    data = dat_dense, 
+                    AR.start = dat_dense$start, rho = rho_dense, 
+                    method = "fREML", discrete = T, nthreads = 1)
+summary(rand_intcpt_slope_dense)
+
+# thin
+rand_intcpt_slope_thin <- bam(f2 ~ group.ordered + 
+                      s(measurement.no, bs = "tp", k = 10) + 
+                      s(measurement.no, by = group.ordered, bs = "tp", k = 10) +
+                      s(word, bs = "re") +
+                      s(word, measurement.no, bs = "re"), 
+                    data = dat_thin, 
+                    AR.start = dat_thin$start, rho = rho_thin, 
+                    method = "fREML", discrete = T, nthreads = 1)
+summary(rand_intcpt_slope_thin)
+```
+
+### 4. Rand smooth, 3 bs
+
+```{r}
+# dense
+rand_smooth_3_dense <- 
+  bam(f2 ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 10) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+        s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = 3), 
+      data = dat_dense, 
+      AR.start = dat_dense$start, rho = rho_dense, 
+      method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_3_dense)
+
+# thin
+rand_smooth_3_thin <- 
+  bam(f2 ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 10) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+        s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = 3), 
+      data = dat_thin, 
+      AR.start = dat_thin$start, rho = rho_thin, 
+      method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_3_thin)
+```
+
+### 5. Rand smooth, 5 bs
+
+```{r}
+# dense
+rand_smooth_5_dense <- 
+  bam(f2 ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 10) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+        s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = 5), 
+      data = dat_dense, 
+      AR.start = dat_dense$start, rho = rho_dense, 
+      method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_5_dense)
+
+# thin
+rand_smooth_5_thin <- 
+  bam(f2 ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 10) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+        s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = 5), 
+      data = dat_thin, 
+      AR.start = dat_thin$start, rho = rho_thin, 
+      method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_5_thin)
+```
+
+### 6. Rand smooth, 10 bs
+
+```{r}
+# dense
+rand_smooth_10_dense <- 
+  bam(f2 ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 10) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+        s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = 10), 
+      data = dat_dense, 
+      AR.start = dat_dense$start, rho = rho_dense, 
+      method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_10_dense)
+
+# thin
+rand_smooth_10_thin <- 
+  bam(f2 ~ group.ordered + 
+        s(measurement.no, bs = "tp", k = 10) + 
+        s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+        s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = 10), 
+      data = dat_thin, 
+      AR.start = dat_thin$start, rho = rho_thin, 
+      method = "fREML", discrete = T, nthreads = 1)
+summary(rand_smooth_10_thin)
+```
+
+### 7. Rand smooth, gam.check
+
+The model fitted in this section uses random smooths where the number of basis functions (k) is determined using the gam.check() function: after fitting an initial model with a relatively low value of k, gam.check() is used to see whether more wiggliness is necessary (essentially, whether the smooths use up all the degrees of freedom afforded to them). If gam.check() suggests that more wiggliness is necessary, this procedure is repeated again using a model with a higher value of k.
+
+Below is a convenience function for extracting the relevant p-value from the output of gam.check.
+
+```{r}
+gam.check.p.value <- function (mod, which.line) { # which.line is a regexp
+  str.out <- capture.output(gam.check(mod))
+  relevant.line <- str.out[grep(which.line, str.out)]
+  p.value <- as.numeric(gsub(".*?([0-9.e-]*)[ .*]*$", "\\1", relevant.line, perl=T))
+  return(p.value)
+}
+```
+
+Fitting the models. Dense first.
+
+```{r}
+# what k's should be tried?
+k_min = 4
+k_max = 10
+k_step = 3
+```
+
+```{r, fig.show='hide'}
+# dense
+for (k in seq(k_min,k_max,k_step)) {
+  cat("fitting model with  k =", k, "\n")
+  
+  # fitting model
+  
+  rand_smooth_gam.check_dense <- 
+    bam(f2 ~ group.ordered + 
+          s(measurement.no, bs = "tp", k = 10) + 
+          s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+          s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = k), 
+        data = dat_dense, 
+        AR.start = dat_dense$start, rho = rho_dense, 
+        method = "fREML", discrete = T, nthreads = 1)
+  
+  # check whether more complexity is needed using gam.check
+  
+  if (gam.check.p.value(rand_smooth_gam.check_dense, "word") >= 0.05 | k == k_max) {
+    print(summary(rand_smooth_gam.check_dense))
+    break
+  }
+}
+``` 
+
+And now the thin data set.
+
+```{r, fig.show='hide'}
+# thin
+for (k in seq(k_min,k_max,k_step)) {
+  cat("fitting model with  k =", k, "\n")
+  
+  # fitting model
+  
+  rand_smooth_gam.check_thin <- 
+    bam(f2 ~ group.ordered + 
+          s(measurement.no, bs = "tp", k = 10) + 
+          s(measurement.no, by = group.ordered, bs = "tp", k = 10) + 
+          s(measurement.no, word, bs = "fs", m = 1, xt = "tp", k = k), 
+        data = dat_thin, 
+        AR.start = dat_thin$start, rho = rho_thin, 
+        method = "fREML", discrete = T, nthreads = 1)
+  
+  # check whether more complexity is needed using gam.check
+  
+  if (gam.check.p.value(rand_smooth_gam.check_thin, "word") >= 0.05 | k == k_max) {
+    print(summary(rand_smooth_gam.check_thin))
+    break
+  }
+}
+```

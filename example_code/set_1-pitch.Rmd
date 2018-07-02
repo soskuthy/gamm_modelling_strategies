@@ -27,7 +27,7 @@ library(itsadug)
 
 ## Data generation
 
-The code in this section can be used to create data for either type I or type II simulations. Set the value of *type* to 1 for type I simulations and to 2 for type II simulations. To replicate the results in table 3, which summarise the same types of trajectories, but with a small amount of added noise, set the value of *noise* to TRUE.
+The code in this section can be used to create data for either type I or type II simulations. Set the value of *type* to 1 for type I simulations and to 2 for type II simulations. To replicate the results in the table in appendix C, which summarises the same types of trajectories, but with a small amount of added noise, set the value of *noise* to TRUE.
 
 ```{r}
 type = 1
@@ -315,7 +315,7 @@ Below is a convenience function for extracting the relevant p-value from the out
 gam.check.p.value <- function (mod, which.line) { # which.line is a regexp
   str.out <- capture.output(gam.check(mod))
   relevant.line <- str.out[grep(which.line, str.out)]
-  p.value <- as.numeric(regmatches(relevant.line, regexpr("[0-9.]*$", relevant.line)))
+  p.value <- as.numeric(gsub(".*?([0-9.e-]*)[ .*]*$", "\\1", relevant.line, perl=T))
   return(p.value)
 }
 ```
@@ -329,7 +329,7 @@ k_max = 12
 k_step = 4
 ```
 
-```{r}
+```{r, fig.keep='none'}
 # dense
 for (k in seq(k_min,k_max,k_step)) {
   cat("fitting model with  k =", k, "\n")
@@ -354,7 +354,7 @@ for (k in seq(k_min,k_max,k_step)) {
 
 And now the thin data set.
 
-```{r}
+```{r, fig.keep='none'}
 # thin
 for (k in seq(k_min,k_max,k_step)) {
   cat("fitting model with  k =", k, "\n")
