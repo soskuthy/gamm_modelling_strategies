@@ -1,102 +1,50 @@
-# type of data: simulated pitch trajectories (in Hz)
-# 50 trajectories, randomly assigned to two groups
-# parameterised variation in
-#   - start of trajectory
-#   - overall declination (linear)
-#   - boundary 1
-#   - boundary 2
-#   - H* - horizontal
-#   - H* - vertical
-#   - H- - vertical
+#-----------------------------
+# code for loading / resampling data set 
+#-----------------------------
 
-# + a bit of random noise
+# type of data: resampled f0 trajectories for contrastive focus in German
+# each simulation starts with contours from a different speaker
+# each speaker has ~ 20 trajectories! (10 per group)
 
-# setting time dimension
+# path previously determined via config file
 
-xs_dense = seq(0,1,0.025)
-xs_thin_ind = c(rep(c(T,F), (length(xs_dense)-1)/2), T)
+dat_full <- readRDS(file.path(dirname(config.file.curr), data.file))
 
-# expected values & sd for starting and end points
-start_mean = 170
-start_sd = 10
-slope_mean = -30
-slope_sd = 8
+# limit to speakers with >= 20 trajectories
 
-# boundaries between N1, N2 and N3
+# dat_full <- subset(dat_full, n >= 30)
 
-boundary.1_min = (1/3) - 0.1
-boundary.1_max = (1/3) + 0.1
+# we sample a single speaker from this data set
 
-boundary.2_min = (2/3) - 0.1
-boundary.2_max = (2/3) + 0.1
+dat <- subset(dat_full, speaker == sample(unique(dat_full$speaker), 1))
 
-# pitch accent
+# we only take what we need
+# (< 50 trajectories)
 
-H.star_vertical_mean = 15 # roughly the equivalent of ~ 1.5-2 semitones
-H.star_vertical_sd = 6
-
-H.star_horizontal_min = 0 # as a proportion of the duration of W1
-H.star_horizontal_max = 0.25
-
-H.star_bw = 0.12 # as a proportion of *overall* duration
-
-# boundary tone
-
-H.minus_vertical_mean = 8 # about half of H.star
-H.minus_vertical_sd = 3
-
-H.minus_bw = 0.08
-
-# final boundary tone
-
-L.percent_vertical = -20
-L.percent_bw = 0.12
-
-# that's all!
-
-n_trajectories <- 50
-
-# assembling trajectories
-
-ys_m <- matrix(0, nrow=length(xs_dense), ncol=n_trajectories)
-for (i in 1:n_trajectories) {
-  start <- rnorm(1, start_mean, start_sd)
-  slope <- rnorm(1, slope_mean, slope_sd)
-  boundary.1 <- runif(1, boundary.1_min, boundary.1_max)
-  boundary.2 <- runif(1, boundary.2_min, boundary.2_max)
-  H.star_horizontal <- runif(1, H.star_horizontal_min, H.star_horizontal_max)
-  H.star_vertical <- rnorm(1, H.star_vertical_mean, H.star_vertical_sd)
-  H.minus_vertical <- rnorm(1, H.minus_vertical_mean, H.minus_vertical_sd)
-  ys_m[,i] <- start + xs_dense*slope +  # declination
-    exp(-((xs_dense - (boundary.1*H.star_horizontal))**2)/(2*H.star_bw**2)) * H.star_vertical + # 1st pitch accent
-    exp(-((xs_dense - boundary.2)**2)/(2*H.minus_bw**2)) * H.minus_vertical + # boundary tone
-    exp(-((xs_dense - 1)**2)/(2*L.percent_bw**2)) * L.percent_vertical # final boundary tone
-}
-
-# assembling data set (randomly assigned categories)
-dat_dense <- data.frame(traj=paste("traj_", rep(1:n_trajectories, each=length(xs_dense)), sep=""), 
-                  group=rep(c("A","B"), each=length(xs_dense)*(n_trajectories / 2)),
-                  measurement.no=xs_dense, 
-                  pitch=c(ys_m),
-                  stringsAsFactors = F
+dat <- subset(dat, 
+              traj %in% sample(unique(dat$traj), 
+                               size=min(length(unique(dat$traj)), 50)
+              )
 )
 
+# we now add randomly assigned category labels
+
+ids <- unique(dat$traj)
+group.Bs <- sample(ids, round(length(ids)/2))
+dat$group <- "A"
+dat$group[dat$traj %in% group.Bs] <- "B"
+
 # setting up different types of grouping factors
-dat_dense$group.factor <- as.factor(dat_dense$group)
-dat_dense$group.ordered <- as.ordered(dat_dense$group) 
-contrasts(dat_dense$group.ordered) <- "contr.treatment"
-dat_dense$group.bin <- as.numeric(dat_dense$group.factor) - 1
+dat$group.factor <- as.factor(dat$group)
+dat$group.ordered <- as.ordered(dat$group)
+contrasts(dat$group.ordered) <- "contr.treatment"
+dat$group.bin <- as.numeric(dat$group.factor) - 1
 
 # ids ought to be factors  
-dat_dense$traj <- as.factor(dat_dense$traj)
+dat$traj <- as.factor(dat$traj)
 
-# add dat$start for AR.start (for autoregressive error models)
+# dat$start has already been added at data prep stage (for AR.start, i.e. for autoregressive error models)
 
-dat_dense$start <- dat_dense$measurement.no == 0
-
-# thin data set:
-
-dat_thin <- dat_dense[rep(xs_thin_ind, n_trajectories),]
 
 
 #-----------------------------
@@ -110,8 +58,8 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   ranef_specs <- str_split(ranefs, "_")[[1]]
   
   # initialise fixed effect part of formula
-  fixef_formula <- "pitch ~ "
-  nested_formula <- "pitch ~ "
+  fixef_formula <- "f0_log_norm ~ "
+  nested_formula <- "f0_log_norm ~ "
   
   if (fixef_specs[1] == "diff") {
     # name of grouping variable (part of output)
@@ -182,9 +130,17 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
                            ranef_specs[3],
                            ')',
                            sep="")
+  } else if (ranef_specs[1] == "gamcheck") {
+    ranef_formula <- paste(ranef_formula, 
+                           '+ s(measurement.no, traj, bs="fs", m=1, xt="',
+                           ranef_specs[2],
+                           '", k=',
+                           as.character(seq(as.numeric(ranef_specs[3]),as.numeric(ranef_specs[4]),as.numeric(ranef_specs[5]))),
+                           ')',
+                           sep="")
   } else if (ranef_specs[1] == "noranef") {
   } else {
-    stop("Invalid random effect string: has to start with one of 'rintcpt', 'rslope', 'rsmooth' or 'noranef'")
+    stop("Invalid random effect string: has to start with one of 'gamcheck', rintcpt', 'rslope', 'rsmooth' or 'noranef'")
   }
   
   final_formula <- paste(fixef_formula, ranef_formula)
@@ -194,9 +150,9 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   
   AR_str <- ""
   if (AR == "AR_est") {
-    AR_str <- paste("AR.start=dat_", dataset, "$start, rho=rho.est, ", sep="")
+    AR_str <- paste("AR.start=dat$start, rho=rho.est, ", sep="")
   } else if (AR != "noAR") {
-    AR_str <- paste("AR.start=dat_", dataset, "$start, rho=", str_split(AR, "_")[[1]][2], sep="")
+    AR_str <- paste("AR.start=dat$start, rho=", str_split(AR, "_")[[1]][2], sep="")
   }
   
   # setting method parameter(s) based on string from job file
@@ -213,7 +169,19 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   }
   
   # assembling bam command
-  bam_str <- paste("bam(", final_formula, ", data=dat_", dataset, ", ", AR_str, method_str, ")", sep="")
-  bam_nested_str <- paste("bam(", final_nested_formula, ", data=dat_", dataset, ", ", AR_str, method_str, ")", sep="")
+  bam_str <- paste("bam(", final_formula, ", data=dat, ", AR_str, method_str, ")", sep="")
+  bam_nested_str <- paste("bam(", final_nested_formula, ", data=dat, ", AR_str, method_str, ")", sep="")
   return(list(full=bam_str, nested=bam_nested_str, grouping_var=grouping_var))
+}
+
+
+#------------------------------------------------
+# Function for extracting p-value from gam.check
+#------------------------------------------------
+
+gam.check.p.value <- function (mod, which.line) {
+  str.out <- capture.output(gam.check(mod))
+  relevant.line <- str.out[grep(which.line, str.out)]
+  p.value <- as.numeric(str_match(relevant.line, "([0-9.]*)[ *.]*$")[[2]])
+  return(p.value)
 }

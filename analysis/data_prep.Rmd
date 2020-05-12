@@ -6,7 +6,7 @@ output: html_notebook
 ```{r "setup", include=FALSE}
 require("knitr")
 # setting workind dir
-opts_knit$set(root.dir = "~/documents/research/projects/dynamic-gam/gamm_modelling_strategies")
+opts_knit$set(root.dir = "~/documents/research/projects/dynamic-gam/gamm_strategies")
 ```
 
 Importing relevant libraries.
@@ -38,6 +38,12 @@ ch.p.value.to.numeric <- function (x) {
   }
 }
 
+# helper function for extracting AIC value from compareML output
+
+AIC.to.numeric <- function (x) {
+  return(as.numeric(gsub("AIC difference: (-*[0-9]*[.][0-9]*).*", "\\1", x)))
+}
+
 # helper function for getting info from a single simulation run
 
 extract.single.line <- function (x) { # where x is a single simulation run
@@ -47,9 +53,11 @@ extract.single.line <- function (x) { # where x is a single simulation run
        method=x$parameters$method,
        mod.comp=x$parameters$mod_comp,
        data.density=x$parameters$dataset,
+       random.smooth.k=ifelse(grepl("gamcheck", x$parameters$random_effects), extract.random.smooth.k(x$full_code), NA),
        smooth.p=x$summary$smooth[2,4],
        par.p=ifelse(nrow(x$summary$parametric) > 1, x$summary$parametric[2,4], NA),
        mod.comp.p=ifelse(!is.null(x$model_comparison), ch.p.value.to.numeric(x$model_comparison$table[[2,6]]), NA),
+       mod.comp.AIC=ifelse(!is.null(x$model_comparison), AIC.to.numeric(x$model_comparison$AIC), NA),
        visual.no.overlap=ifelse(!is.null(x$visual_no_overlap),x$visual_no_overlap,NA),
        visual.excludes.0=ifelse(!is.null(x$visual_excludes_0),x$visual_excludes_0,NA),
        time=x$time[[3]],
@@ -61,21 +69,33 @@ extract.single.line <- function (x) { # where x is a single simulation run
 analyse.batch <- function (output.item) {
   return( rbindlist(lapply(output.item, extract.single.line)) )
 }
+
+extract.random.smooth.k <- function (model_code) {
+  return(as.numeric(str_match(model_code, 'bs=["]fs["][^)]*k=([0-9]*)')[2]))
+}
 ```
 
 Now we load the relevant data sets, process them and write the master data sheet to an rds file.
 
 ```{r}
 # these are the subfolders in the gamm_modelling_strategies github repo
-dirs.to.read <- c("formants/simple",
-                  "formants/complex_across",
-                  "formants/complex_within",
-                  "formants/complex_sigtest",
-                  "pitch/simple",
-                  "pitch/complex_across",
-                  "pitch/complex_sigtest")
+# dirs.to.read <- c("pitch/complex_sigtest")
+dirs.to.read <- c("formants/simple/output_type_1",
+                  "formants/complex_across/output_type_1",
+                  "formants/complex_sigtest/output_type_1",
+                  "pitch/simple/output_type_1",
+                  "pitch/complex_across/output_type_1",
+                  "pitch/complex_sigtest/output_type_1",
+                  "simulated/simple/output_type_1",
+                  "simulated/simple/output_type_2",
+                  "simulated/complex_across/output_type_1",
+                  "simulated/complex_across/output_type_2",
+                  "simulated/complex_within/output_type_1",
+                  "simulated/complex_within/output_type_2",
+                  "simulated/complex_sigtest/output_type_1",
+                  "simulated/complex_sigtest/output_type_2")
 # adding location of type 1 / type 2 sims for each subfolder
-dirs.to.read <- unlist(lapply(c("/output_type_1","/output_type_2"), function (x) paste(dirs.to.read,x,sep="")))
+# dirs.to.read <- unlist(lapply(c("/output_type_1","/output_type_2"), function (x) paste(dirs.to.read,x,sep="")))
 # metadata for merging with loaded data sets (generated from folder names)
 dirs.to.read.df <- data.table(sim.summary=dirs.to.read,
                               data.type=unlist(lapply(str_split(dirs.to.read, "/"), function (x) x[1])),

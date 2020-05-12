@@ -101,6 +101,9 @@ for (r in 1:nrow(to_fit)) {
     
     # if AR, then first fit model with fREML to get rho.est; 
     if (pars$AR == "AR_est") {
+      if (substring(pars$random_effects, 1, nchar("gamcheck")) == "gamcheck") {
+        stop("Combining random effect string 'gamcheck' with AR models not yet implemented")
+      }
       bam_AR_code <- parse(text=paste("AR_mod <-", assemble_bam(pars$fixed_effects, 
                                                                 pars$random_effects, 
                                                                 "noAR", 
@@ -112,21 +115,70 @@ for (r in 1:nrow(to_fit)) {
       rho.est <- start_value_rho(AR_mod)
     }
     
-    # fit full model, record peak memory consumption
+    # if gamcheck, fit increasingly complex models and run gam.check at each
+    # point to see if there is undersmoothing; break loop if model is
+    # sufficiently complex
     
-    zz <- textConnection("memory_use", "w")
-    sink(zz, type="message")
-    gcinfo(T)
-    gc(verbose=T)
-    gc(verbose=T)
-    eval(full_code)
-    gc(verbose=T)
-    gcinfo(F)
-    sink(file=NULL, type="message")
-    close(zz)
+    if (grepl("gamcheck", pars$random_effects)) {
+      if (grepl("[+]gamcheck", pars$random_effects)) {
+        random_groups <- "speaker"
+      } else {
+        random_groups <- "traj"
+      }
+      for (counter in 1:length(full_code)) {
+        curr_full_code <- full_code[counter]
+
+        # fit full model, record peak memory consumption
+        
+        zz <- textConnection("memory_use", "w")
+        sink(zz, type="message")
+        gcinfo(T)
+        gc(verbose=T)
+        gc(verbose=T)
+        eval(curr_full_code)
+        gc(verbose=T)
+        gcinfo(F)
+        sink(file=NULL, type="message")
+        close(zz)
+        
+        mems <- as.numeric(str_extract(memory_use[grep("Mbytes of vectors", memory_use)], "^[0-9]*[.]*[0-9]*"))
+        mem.peak <- max(mems) - mems[1]
+        
+        # break loop if model is sufficiently complex or maximum complexity
+        # has been reached
+        
+        if (gam.check.p.value(full_mod, random_groups) >= 0.05 | counter == length(full_code)) {
+          full_code <- curr_full_code
+          bams_code$full <- bams_code$full[counter]
+          nested_code <- nested_code[counter]
+          bams_code$nested <- bams_code$nested[counter]
+          break
+        }
+        
+        # (note: k for final model can be read out of full_code
+        # slot of output object - so not recorded separately)
+      }
+    } else {
     
-    mems <- as.numeric(str_extract(memory_use[grep("Mbytes of vectors", memory_use)], "^[0-9]*[.]*[0-9]*"))
-    mem.peak <- max(mems) - mems[1]
+    # if not gamcheck:
+    
+      # fit full model, record peak memory consumption
+      
+      zz <- textConnection("memory_use", "w")
+      sink(zz, type="message")
+      gcinfo(T)
+      gc(verbose=T)
+      gc(verbose=T)
+      eval(full_code)
+      gc(verbose=T)
+      gcinfo(F)
+      sink(file=NULL, type="message")
+      close(zz)
+      
+      mems <- as.numeric(str_extract(memory_use[grep("Mbytes of vectors", memory_use)], "^[0-9]*[.]*[0-9]*"))
+      mem.peak <- max(mems) - mems[1]
+    
+    }
     
     # get model summary
     
@@ -181,6 +233,7 @@ for (r in 1:nrow(to_fit)) {
     if (pars$mod_comp == "modcomp") {
       eval(nested_code)
       model_comparison <- compareML(full_mod, nested_mod, print.output=F)
+      model_comparison$AIC_2 <- AIC(full_mod, nested_mod)
     }
     
     # generate output
@@ -195,7 +248,8 @@ for (r in 1:nrow(to_fit)) {
                              visual_excludes_0=visual_excludes_0,
                              model_comparison=model_comparison,
                              time=t,
-                             memory=mem.peak)
+                             memory=mem.peak,
+                             speakers=as.character(unique(dat$speaker)))
 }
 
 #-------------

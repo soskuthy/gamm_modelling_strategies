@@ -1,75 +1,51 @@
 #-----------------------------
-# code for creating data set 
+# code for loading / resampling data set 
 #-----------------------------
 
-# type of data: simulated f2 trajectories for /eI/ (logistic curve)
-# 50 trajectories, randomly assigned to two groups
-# parameterised variation in
-#   - start of trajectory
-#   - end of trajectory
-#   - transition point
-#   - transition steepness
-# + a bit of random noise
+# type of data: resampled f2 trajectories for /aI/ (rising contour, simple shape)
+# each simulation starts with contours from a different speaker
+# each speaker has at least 20 trajectories! (10 per group)
 
-# setting time dimension
+# path previously determined via config file
 
-xs_dense = seq(0,1,0.05)
-xs_thin_ind = c(rep(c(T,F), (length(xs_dense)-1)/2), T)
+dat_full <- readRDS(file.path(dirname(config.file.curr), data.file))
 
-# expected values & sd for starting and end points
-f2_start_mean = 1500
-f2_end_mean = 2000
-f2_start_sd = 50
-f2_end_sd = 50
+# limit to speakers with >= 20 trajectories
 
-# expected value & sd for transition point
-x0_mean = 0.35
-x0_sd = 0.025
+dat_full <- subset(dat_full, n >= 30)
 
-# expected value & sd for steepness (higher -> more steep)
-k_mean = 25
-k_sd = 5
-# amount of random noise
+# we sample a single speaker from this data set
 
-noise_sd <- 5
+dat <- subset(dat_full, speaker == sample(unique(dat_full$speaker), 1))
 
-n_trajectories <- 50
+# we only take what we need
+# (< 50 trajectories)
 
-# assembling trajectories
+dat <- subset(dat, 
+              traj %in% sample(unique(dat$traj), 
+                               size=min(length(unique(dat$traj)), 50)
+              )
+)
 
-ys_m_dense <- matrix(0, nrow=length(xs_dense), ncol=n_trajectories)
-for (i in 1:n_trajectories) {
-  f2_start <- rnorm(1, f2_start_mean, f2_start_sd)
-  f2_end <- rnorm(1, f2_end_mean, f2_end_sd)
-  x0 <- rnorm(1, x0_mean, x0_sd)
-  k <- rnorm(1, k_mean, k_sd)
-  ys_m_dense[,i] <- ((f2_end - f2_start) / (1 + exp(-k*(xs_dense-x0)))) + f2_start + rnorm(length(xs_dense), 0, noise_sd)
-}
+# we now add randomly assigned category labels
 
-# assembling data set (randomly assigned to categories)
-dat_dense <- data.frame(traj=paste("traj_", rep(1:n_trajectories, each=length(xs_dense)), sep=""), 
-                  group=rep(c("A","B"), each=length(xs_dense)*(n_trajectories / 2)),
-                  measurement.no=xs_dense, 
-                  f2=c(ys_m_dense),
-                  stringsAsFactors = F
-                 )
+ids <- unique(dat$traj)
+group.Bs <- sample(ids, round(length(ids)/2))
+dat$group <- "A"
+dat$group[dat$traj %in% group.Bs] <- "B"
 
 # setting up different types of grouping factors
-dat_dense$group.factor <- as.factor(dat_dense$group)
-dat_dense$group.ordered <- as.ordered(dat_dense$group)
-contrasts(dat_dense$group.ordered) <- "contr.treatment"
-dat_dense$group.bin <- as.numeric(dat_dense$group.factor) - 1
+dat$group.factor <- as.factor(dat$group)
+dat$group.ordered <- as.ordered(dat$group)
+contrasts(dat$group.ordered) <- "contr.treatment"
+dat$group.bin <- as.numeric(dat$group.factor) - 1
 
 # ids ought to be factors  
-dat_dense$traj <- as.factor(dat_dense$traj)
+dat$traj <- as.factor(dat$traj)
 
-# add dat$start for AR.start (for autoregressive error models)
+# dat$start has already been added at data prep stage (for AR.start, i.e. for autoregressive error models)
 
-dat_dense$start <- dat_dense$measurement.no == 0
 
-# thin data set:
-
-dat_thin <- dat_dense[rep(xs_thin_ind, n_trajectories),]
 
 #-----------------------------
 # function for assembling bam
@@ -103,12 +79,12 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
                            ')',
                            sep="")
     nested_formula <- paste(nested_formula,
-                           's(measurement.no, bs="',
-                           fixef_specs[2],
-                           '", k=',
-                           fixef_specs[3],
-                           ')',
-                           sep="")
+                            's(measurement.no, bs="',
+                            fixef_specs[2],
+                            '", k=',
+                            fixef_specs[3],
+                            ')',
+                            sep="")
   } else if (fixef_specs[1] == "bin") {
     # name of grouping variable (part of output)
     grouping_var <- "group.bin"
@@ -154,9 +130,17 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
                            ranef_specs[3],
                            ')',
                            sep="")
+  } else if (ranef_specs[1] == "gamcheck") {
+    ranef_formula <- paste(ranef_formula, 
+                           '+ s(measurement.no, traj, bs="fs", m=1, xt="',
+                           ranef_specs[2],
+                           '", k=',
+                           as.character(seq(as.numeric(ranef_specs[3]),as.numeric(ranef_specs[4]),as.numeric(ranef_specs[5]))),
+                           ')',
+                           sep="")
   } else if (ranef_specs[1] == "noranef") {
   } else {
-    stop("Invalid random effect string: has to start with one of 'rintcpt', 'rslope', 'rsmooth' or 'noranef'")
+    stop("Invalid random effect string: has to start with one of 'gamcheck', rintcpt', 'rslope', 'rsmooth' or 'noranef'")
   }
   
   final_formula <- paste(fixef_formula, ranef_formula)
@@ -166,9 +150,9 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   
   AR_str <- ""
   if (AR == "AR_est") {
-    AR_str <- paste("AR.start=dat_", dataset, "$start, rho=rho.est, ", sep="")
+    AR_str <- paste("AR.start=dat$start, rho=rho.est, ", sep="")
   } else if (AR != "noAR") {
-    AR_str <- paste("AR.start=dat_", dataset, "$start, rho=", str_split(AR, "_")[[1]][2], sep="")
+    AR_str <- paste("AR.start=dat$start, rho=", str_split(AR, "_")[[1]][2], sep="")
   }
   
   # setting method parameter(s) based on string from job file
@@ -185,7 +169,19 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   }
   
   # assembling bam command
-  bam_str <- paste("bam(", final_formula, ", data=dat_", dataset, ", ", AR_str, method_str, ")", sep="")
-  bam_nested_str <- paste("bam(", final_nested_formula, ", data=dat_", dataset, ", ", AR_str, method_str, ")", sep="")
+  bam_str <- paste("bam(", final_formula, ", data=dat, ", AR_str, method_str, ")", sep="")
+  bam_nested_str <- paste("bam(", final_nested_formula, ", data=dat, ", AR_str, method_str, ")", sep="")
   return(list(full=bam_str, nested=bam_nested_str, grouping_var=grouping_var))
+}
+
+
+#------------------------------------------------
+# Function for extracting p-value from gam.check
+#------------------------------------------------
+
+gam.check.p.value <- function (mod, which.line) {
+  str.out <- capture.output(gam.check(mod))
+  relevant.line <- str.out[grep(which.line, str.out)]
+  p.value <- as.numeric(str_match(relevant.line, "([0-9.]*)[ *.]*$")[[2]])
+  return(p.value)
 }

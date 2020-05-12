@@ -1,91 +1,44 @@
 #-----------------------------
-# code for creating data set 
+# code for loading / resampling data set 
 #-----------------------------
 
-# type of data: simulated f2 trajectories for /eI/ (logistic curve)
-# 500 trajectories, 50 words
-# parameterised variation in
-#   - start of trajectory
-#   - end of trajectory
-#   - transition point
-#   - transition steepness
-# + a bit of random noise
-#   - hierarchical structure (measurements within trajectories within words)
-#   - across-word variation
+# type of data: resampled f2 trajectories for /aI/ (rising contour, simple shape)
+# each simulation starts with contours from a different speaker
+# each speaker has at least 20 trajectories! (10 per group)
 
-# setting time dimension
+# path previously determined via config file
 
-xs_dense = seq(0,1,0.05)
-xs_thin_ind = c(rep(c(T,F), (length(xs_dense)-1)/2), T)
+dat_full <- readRDS(file.path(dirname(config.file.curr), data.file))
 
-# population parameters: individual words come from this dist
-f2_start_mean = 1500
-f2_end_mean = 2000
-f2_start_sd.word = 40
-f2_end_sd.word = 40
-# expected value & sd for transition point
-x0_mean = 0.35
-x0_sd.word = 0.020
-# expected value & sd for steepness (higher -> more steep)
-k_mean = 25
-k_sd.word = 4
+# limit to speakers with >= 20 trajectories
 
-# how much variation within words?
-f2_start_sd.traj = 30
-f2_end_sd.traj = 30
-x0_sd.traj = 0.015
-k_sd.traj = 3
+dat_full <- subset(dat_full, n >= 30)
 
-# amount of random noise
+# we sample 20 trajectories from each speaker
 
-noise_sd <- 5
+dat <- dat_full %>%
+  group_by(speaker) %>%
+  filter(traj %in% sample(unique(traj), 20, replace=F)) %>%
+  ungroup()
+  
+# we now add randomly assigned category labels
 
-n_words <- 50
-n_trajectories_per_word <- 10
-
-# assembling trajectories
-
-ys_m <- matrix(0, nrow=length(xs_dense), ncol=n_words*n_trajectories_per_word)
-for (i in 1:n_words) {
-  f2_start.word <- rnorm(1, f2_start_mean, f2_start_sd.word)
-  f2_end.word <- rnorm(1, f2_end_mean, f2_end_sd.word)
-  x0.word <- rnorm(1, x0_mean, x0_sd.word)
-  k.word <- rnorm(1, k_mean, k_sd.word)
-  for (j in 1:n_trajectories_per_word) {
-    f2_start <- rnorm(1, f2_start.word, f2_start_sd.traj)
-    f2_end <- rnorm(1, f2_end.word, f2_end_sd.traj)
-    x0 <- rnorm(1, x0.word, x0_sd.traj)
-    k <- rnorm(1, k.word, k_sd.traj)
-    ys_m[,(i-1)*n_trajectories_per_word + j] <- ((f2_end - f2_start) / (1 + exp(-k*(xs_dense-x0)))) + f2_start + rnorm(length(xs_dense), 0, noise_sd)
-  }
-}
-
-# assembling data set (randomly assigned to categories)
-dat_dense <- data.frame(traj=paste("traj_", rep(1:(n_words*n_trajectories_per_word), each=length(xs_dense)), sep=""),
-                  word=paste("word_", rep(1:n_words, each=length(xs_dense)*n_trajectories_per_word), sep=""),
-                  group=rep(c("A","B"), each=length(xs_dense)*(n_words*n_trajectories_per_word / 2)),
-                  measurement.no=xs_dense, 
-                  f2=c(ys_m),
-                  stringsAsFactors = F
-                 )
+ids <- unique(dat$speaker)
+group.Bs <- sample(ids, round(length(ids)/2))
+dat$group <- "A"
+dat$group[dat$speaker %in% group.Bs] <- "B"
 
 # setting up different types of grouping factors
-dat_dense$group.factor <- as.factor(dat_dense$group)
-dat_dense$group.ordered <- as.ordered(dat_dense$group)
-contrasts(dat_dense$group.ordered) <- "contr.treatment"
-dat_dense$group.bin <- as.numeric(dat_dense$group.factor) - 1
+dat$group.factor <- as.factor(dat$group)
+dat$group.ordered <- as.ordered(dat$group)
+contrasts(dat$group.ordered) <- "contr.treatment"
+dat$group.bin <- as.numeric(dat$group.factor) - 1
 
 # ids ought to be factors  
-dat_dense$traj <- as.factor(dat_dense$traj)
-dat_dense$word <- as.factor(dat_dense$word)
+dat$traj <- as.factor(dat$traj)
+dat$speaker <- as.factor(dat$speaker)
 
-# add dat$start for AR.start (for autoregressive error models)
-
-dat_dense$start <- dat_dense$measurement.no == 0
-
-# thin data set:
-
-dat_thin <- dat_dense[rep(xs_thin_ind, n_words*n_trajectories_per_word),]
+# dat$start has already been added at data prep stage (for AR.start, i.e. for autoregressive error models)
 
 #-----------------------------
 # function for assembling bam
@@ -102,12 +55,20 @@ assemble_rstruct <- function (r, grouping) {
     out <- paste(out, ' + s(',  grouping, ', bs="re") + s(',  grouping, ', measurement.no, bs="re")', sep="")
   } else if (r[1] == "rsmooth") {
     out <- paste(out, 
-                           ' + s(measurement.no, ',  grouping, ', bs="fs", m=1, xt="',
-                           r[2],
-                           '", k=',
-                           r[3],
-                           ')',
-                           sep="")
+                 ' + s(measurement.no, ',  grouping, ', bs="fs", m=1, xt="',
+                 r[2],
+                 '", k=',
+                 r[3],
+                 ')',
+                 sep="")
+  } else if (r[1] == "gamcheck") {
+    out <- paste(out, 
+                 ' + s(measurement.no, ',  grouping, ', bs="fs", m=1, xt="',
+                 r[2],
+                 '", k=',
+                 as.character(seq(as.numeric(r[3]),as.numeric(r[4]),as.numeric(r[5]))),
+                 ')',
+                 sep="")
   } else if (r[1] == "noranef") {
   } else {
     stop("Invalid random effect string: has to start with one of 'rintcpt', 'rslope', 'rsmooth' or 'noranef'")
@@ -143,12 +104,12 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
                            ')',
                            sep="")
     nested_formula <- paste(nested_formula,
-                           's(measurement.no, bs="',
-                           fixef_specs[2],
-                           '", k=',
-                           fixef_specs[3],
-                           ')',
-                           sep="")
+                            's(measurement.no, bs="',
+                            fixef_specs[2],
+                            '", k=',
+                            fixef_specs[3],
+                            ')',
+                            sep="")
   } else if (fixef_specs[1] == "bin") {
     # name of grouping variable (part of output)
     grouping_var <- "group.bin"
@@ -181,7 +142,7 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   # and random smooth (with user-specified k and basis type)
   
   ranef_formula <- ''
-  groupers <- c("traj", "word")
+  groupers <- c("traj", "speaker")
   for (j in 1:length(ranef_specs)) {
     ranef_formula <- paste(ranef_formula, assemble_rstruct(ranef_specs[[j]], groupers[j]), sep="")
   }
@@ -193,9 +154,9 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   
   AR_str <- ""
   if (AR == "AR_est") {
-    AR_str <- paste("AR.start=dat_", dataset, "$start, rho=rho.est, ", sep="")
+    AR_str <- paste("AR.start=dat$start, rho=rho.est, ", sep="")
   } else if (AR != "noAR") {
-    AR_str <- paste("AR.start=dat_", dataset, "$start, rho=", str_split(AR, "_")[[1]][2], sep="")
+    AR_str <- paste("AR.start=dat$start, rho=", str_split(AR, "_")[[1]][2], sep="")
   }
   
   # setting method parameter(s) based on string from job file
@@ -216,7 +177,18 @@ assemble_bam <- function (fixefs, ranefs, AR, method, dataset) {
   }
   
   # assembling bam command
-  bam_str <- paste("bam(", final_formula, ", data=dat_", dataset, ", ", AR_str, method_str, ")", sep="")
-  bam_nested_str <- paste("bam(", final_nested_formula, ", data=dat_", dataset, ", ", AR_str, method_str, ")", sep="")
+  bam_str <- paste("bam(", final_formula, ", data=dat, ", AR_str, method_str, ")", sep="")
+  bam_nested_str <- paste("bam(", final_nested_formula, ", data=dat, ", AR_str, method_str, ")", sep="")
   return(list(full=bam_str, nested=bam_nested_str, grouping_var=grouping_var))
+}
+
+#------------------------------------------------
+# Function for extracting p-value from gam.check
+#------------------------------------------------
+
+gam.check.p.value <- function (mod, which.line) {
+  str.out <- capture.output(gam.check(mod))
+  relevant.line <- str.out[grep(which.line, str.out)]
+  p.value <- as.numeric(str_match(relevant.line, "([0-9.]*)[ *.]*$")[[2]])
+  return(p.value)
 }
